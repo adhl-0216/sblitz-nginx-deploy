@@ -1,0 +1,128 @@
+networks:
+  default-network:
+    driver: bridge
+  auth-network:
+    driver: bridge
+  bill-network:
+    driver: bridge
+
+volumes:
+  bill-db-vol:
+  auth-db-data:
+  supertokens-data:
+
+services:
+  # Nginx
+  nginx:
+    image: nginx:latest
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      - default-network
+    depends_on:
+      - frontend-app
+      - auth-proxy
+      - bill-api
+
+  # Frontend
+  frontend-app:
+    profiles:
+      - frontend
+    image: adhl0216/sblitz-frontend:dev
+    # env_file:
+    #   - frontend.env
+    expose:
+      - 3000
+    networks:
+      - default-network
+
+  # Auth
+  auth-proxy:
+    profiles:
+      - auth
+    image: adhl0216/sblitz-auth:dev
+    expose:
+      - "80"
+    volumes:
+      - ./auth.env:/code/.env
+    networks:
+      - default-network
+      - auth-network
+    depends_on:
+      supertokens-core:
+        condition: service_healthy
+
+  auth-db:
+    profiles:
+      - auth
+    image: "postgres:latest"
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: admin
+      POSTGRES_DB: supertokens
+    expose:
+      - "5432"
+    networks:
+      - auth-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "admin", "-d", "supertokens"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - auth-db-data:/var/lib/postgresql/data
+
+  supertokens-core:
+    profiles:
+      - auth
+    image: registry.supertokens.io/supertokens/supertokens-postgresql:9.3.0
+    depends_on:
+      auth-db:
+        condition: service_healthy
+    expose:
+      - "3567"
+    environment:
+      POSTGRESQL_CONNECTION_URI: "postgresql://admin:admin@auth-db:5432/supertokens"
+      SUPERTOKENS_DATA_DIR: /app/data
+    volumes:
+      - supertokens-data:/app/data
+    networks:
+      - auth-network
+    restart: unless-stopped
+    healthcheck:
+      test: >
+        bash -c 'exec 3<>/dev/tcp/127.0.0.1/3567 && echo -e "GET /hello HTTP/1.1\r\nhost: 127.0.0.1:3567\r\nConnection: close\r\n\r\n" >&3 && cat <&3 | grep "Hello"'
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Billing
+  bill-api:
+    profiles:
+      - bill
+    image: adhl0216/sblitz-bill:dev
+    env_file:
+      - bill.env
+    expose:
+      - "5000"
+    networks:
+      - default-network
+      - bill-network
+    depends_on:
+      - bill-db
+
+  bill-db:
+    profiles:
+      - bill
+    image: adhl0216/sblitz-bill-db:dev
+    env_file:
+      - bill.env
+    expose:
+      - 5432
+    volumes:
+      - bill-db-vol:/var/lib/postgresql/data
+    networks:
+      - bill-network
